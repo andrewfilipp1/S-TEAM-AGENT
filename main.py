@@ -93,10 +93,38 @@ def save_offer_to_db(offer_data, created_by_user):
 
 def load_offers_from_db():
     conn = sqlite3.connect(DB_FILE)
+    # Δημιουργούμε ένα "factory" για να παίρνουμε τα αποτελέσματα ως λεξικό (dictionary)
+    conn.row_factory = sqlite3.Row 
     c = conn.cursor()
-    query = "SELECT full_offer_data FROM offers ORDER BY cast(substr(protocol_number, 3) as integer) DESC"
+    
+    # Τώρα επιλέγουμε τις συγκεκριμένες στήλες που χρειαζόμαστε
+    query = """
+        SELECT 
+            protocol_number, 
+            client_company, 
+            issue_date, 
+            created_by_user, 
+            full_offer_data 
+        FROM offers 
+        ORDER BY cast(substr(protocol_number, 3) as integer) DESC
+    """
     c.execute(query)
-    all_offers = [json.loads(row[0]) for row in c.fetchall() if row[0]]
+    
+    all_offers = []
+    for row in c.fetchall():
+        # Μετατρέπουμε το κάθε αποτέλεσμα (row) σε ένα κανονικό dictionary
+        offer_dict = dict(row)
+        
+        # Για λόγους συμβατότητας, διασφαλίζουμε ότι το full_offer_data υπάρχει
+        # και προσθέτουμε τα υπόλοιπα κλειδιά από αυτό
+        try:
+            full_data = json.loads(offer_dict.get('full_offer_data', '{}'))
+            offer_dict.update(full_data)
+        except (json.JSONDecodeError, TypeError):
+            pass # Αν υπάρχει σφάλμα στο JSON, το αγνοούμε και συνεχίζουμε με τα καθαρά δεδομένα
+            
+        all_offers.append(offer_dict)
+        
     conn.close()
     return all_offers
 
@@ -192,7 +220,7 @@ class OfferPDF(FPDF):
 def create_page_1_intro(pdf, data, toc_entries):
     pdf.add_page()
     if os.path.exists('logo.png'): pdf.image('logo.png', x=150, y=10, w=50)
-    if os.path.exists('upsales_logo.png'): pdf.image('upsales_logo.png', x=105, y=10, w=40)
+    if os.path.exists('upsales_logo.png'): pdf.image('upsales_logo.png', x=105, y=20, w=40)
     pdf.set_draw_color(100, 100, 100)
     pdf.set_font('DejaVu', 'B', 12); pdf.set_xy(15, 40); pdf.cell(0, 10, 'ΣΤΟΙΧΕΙΑ ΠΕΛΑΤΗ')
     pdf.set_font('DejaVu', '', 10); pdf.set_xy(15, 50)
@@ -510,71 +538,89 @@ def display_settings_popover():
                 else:
                     st.error("Οι νέοι κωδικοί δεν ταιριάζουν ή είναι κενοί.")
 # --- 5. MAIN APPLICATION ---
+# --- 5. MAIN APPLICATION (FINAL CORRECTED VERSION) ---
 def main():
     st.set_page_config(layout="wide", page_title="S-Team Dashboard")
 
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-        st.session_state.username = None
-        st.session_state.user_role = None
-        st.session_state.first_name = None
-        st.session_state.last_name = None
-        st.session_state.email = None
-        st.session_state.offers_history = []
-        st.session_state.ai_messages = []
-        st.session_state.pdf_output = None
-        st.session_state.pdf_filename = None
+    # Initialize session state keys if they don't exist
+    default_state = {
+        'logged_in': False, 'username': None, 'user_role': None, 'first_name': None,
+        'last_name': None, 'email': None, 'offers_history': [], 'ai_messages': [],
+        'pdf_output': None, 'pdf_filename': None
+    }
+    for key, value in default_state.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
+    # --- LOGIN PAGE LOGIC ---
     if not st.session_state.logged_in:
-        st.title("S-Team Dashboard");
-        _ , col2, _ = st.columns([1, 1.5, 1])
+        st.title("S-Team Dashboard")
+        _, col2, _ = st.columns([1, 1.5, 1])
         with col2:
             st.header("Είσοδος στο Σύστημα")
-            auth_choice = st.radio("Επιλογή", ["Σύνδεση", "Εγγραφή", "Ανάκτηση Λογαριασμού"], horizontal=True, label_visibility="collapsed")
+            auth_choice = st.radio("Επιλογή", ["Σύνδεση", "Εγγραφή"], horizontal=True, label_visibility="collapsed")
+            
             if auth_choice == "Σύνδεση":
                 with st.form("login_form"):
-                    username = st.text_input("Username"); password = st.text_input("Password", type="password")
+                    username = st.text_input("Username")
+                    password = st.text_input("Password", type="password")
                     if st.form_submit_button("Σύνδεση", use_container_width=True, type="primary"):
                         success, user_data = authenticate_user(username, password)
                         if success:
-                            st.session_state.logged_in = True; st.session_state.username = username
-                            for key, value in user_data.items(): st.session_state[key] = value
+                            st.session_state.logged_in = True
+                            st.session_state.username = username
+                            # Use .get() for safety, although authenticate_user should always return these
+                            st.session_state.user_role = user_data.get('role')
+                            st.session_state.first_name = user_data.get('first_name')
+                            st.session_state.last_name = user_data.get('last_name')
+                            st.session_state.email = user_data.get('email')
                             st.rerun()
-                        else: st.error("Λάθος στοιχεία σύνδεσης.")
+                        else:
+                            st.error("Λάθος στοιχεία σύνδεσης.")
+            
             elif auth_choice == "Εγγραφή":
                 with st.form("register_form"):
                     st.markdown("Δημιουργία νέου λογαριασμού")
                     c1, c2 = st.columns(2)
-                    first_name = c1.text_input("Όνομα*"); last_name = c2.text_input("Επώνυμο*")
+                    first_name = c1.text_input("Όνομα*")
+                    last_name = c2.text_input("Επώνυμο*")
                     email = st.text_input("Email*")
-                    username = c1.text_input("Username*"); password = c2.text_input("Password*", type="password")
+                    username = c1.text_input("Username*")
+                    password = c2.text_input("Password*", type="password")
                     if st.form_submit_button("Εγγραφή", use_container_width=True):
                         if all([first_name, last_name, email, username, password]):
                             success, msg = add_user_to_db(username, password, first_name, last_name, email)
-                            if success: st.success("Επιτυχής εγγραφή! Μπορείτε τώρα να συνδεθείτε.")
-                            else: st.error(msg)
-                        else: st.error("Όλα τα πεδία είναι υποχρεωτικά.")
-            elif auth_choice == "Ανάκτηση Λογαριασμού":
-                display_recovery_ui()
-        st.stop()
+                            if success:
+                                st.success("Επιτυχής εγγραφή! Μπορείτε τώρα να συνδεθείτε.")
+                            else:
+                                st.error(msg)
+                        else:
+                            st.error("Όλα τα πεδία είναι υποχρεωτικά.")
+        return # Stop execution if not logged in
 
-    col1, col_user, col_settings, col_logout = st.columns([4, 2, 1, 1])
+    # --- MAIN APP INTERFACE (for logged-in users) ---
+    
+    # Header and User Info
+    col1, col_user, col_settings, col_logout = st.columns([4, 2, 0.5, 0.7])
     with col1:
-        st.title("S-Team Dashboard"); st.markdown("##### Διαχείριση προσφορών και πελατών")
+        st.title("S-Team Dashboard")
+        st.markdown("##### Διαχείριση προσφορών και πελατών")
     with col_user:
-        st.markdown(f"###### Καλωσήρθες, {st.session_state.first_name}!");
+        st.markdown(f"###### Καλωσήρθες, {st.session_state.first_name}!")
     with col_settings:
         display_settings_popover()
     with col_logout:
-        if st.button("🚪", help="Αποσύνδεση", use_container_width=True):
-            logout(); st.rerun()
+        if st.button("🚪 Αποσύνδεση", help="Αποσύνδεση", use_container_width=True):
+            logout()
+            st.rerun()
     st.divider()
 
-    # --- ΔΙΟΡΘΩΣΗ ΕΔΩ: Προστέθηκε η καρτέλα "Ρυθμίσεις" ---
+    # Tabs
     tabs = ["➕ Νέα Προσφορά", "📂 Ιστορικό", "📈 Ανάλυση", "🤖 AI Assistant", "⚙️ Ρυθμίσεις"]
     tab_new, tab_history, tab_analytics, tab_ai, tab_settings = st.tabs(tabs)
 
     with tab_new:
+        # (This tab's code is correct and remains as is)
         st.header("Δημιουργία Νέας Προσφοράς")
         col_form, col_actions = st.columns([3, 2])
         with col_form:
@@ -624,53 +670,85 @@ def main():
                                 if success: st.success(msg)
                                 else: st.error(msg)
                         else: st.warning("Παρακαλώ εισάγετε email παραλήπτη.")
-
+    
     with tab_history:
-        st.header("Ιστορικό Προσφορών")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            if st.session_state.user_role == 'admin':
-                user_list = ["Όλοι οι Χρήστες"] + get_all_usernames()
-                selected_user = st.selectbox("Φιλτράρισμα Ιστορικού ανά Χρήστη:", user_list)
-        with col2:
-            st.write(""); st.write("")
-            if st.button("Ανανέωση Λίστας", use_container_width=True):
-                st.session_state.offers_history = []
-                st.rerun()
+        st.header("📂 Ιστορικό Προσφορών")
+
+        # Load offers if not already in session state
         if not st.session_state.get('offers_history'):
-            st.session_state.offers_history = load_offers_from_db()
+            with st.spinner("Φόρτωση ιστορικού..."):
+                st.session_state.offers_history = load_offers_from_db()
         
-        offers_to_display = st.session_state.offers_history
-        if 'selected_user' in locals() and st.session_state.user_role == 'admin' and selected_user != "Όλοι οι Χρήστες":
-            offers_to_display = [offer for offer in offers_to_display if offer.get('created_by_user') == selected_user]
-        elif st.session_state.user_role != 'admin':
-             offers_to_display = [offer for offer in offers_to_display if offer.get('created_by_user') == st.session_state.username]
+        all_offers = st.session_state.get('offers_history', [])
+        
+        # --- UI and Filtering Logic ---
+        user_to_filter = None
 
-        for i, offer in enumerate(offers_to_display):
-            with st.expander(f"**{offer.get('protocol_number')}** - {offer.get('client_company')} ({offer.get('issue_date')})"):
-                display_offer_details(offer)
-                st.divider()
-                pdf_bytes_hist = generate_pdf_data(offer)
-                if pdf_bytes_hist:
-                    base64_pdf_hist = base64.b64encode(pdf_bytes_hist).decode('utf-8')
-                    pdf_data_uri_hist = f"data:application/pdf;base64,{base64_pdf_hist}"
-                    c1, c2, c3 = st.columns([2, 2, 3])
-                    c1.link_button("👁️ Προεπισκόπηση", url=pdf_data_uri_hist, use_container_width=True)
-                    c2.download_button(label=f"📥 Λήψη", data=pdf_bytes_hist, file_name=f"Offer_{offer.get('protocol_number')}.pdf", mime="application/pdf", key=f"down_hist_{i}", use_container_width=True)
-                    with c3:
-                        with st.expander("📧"):
-                            hist_recipient = st.text_input("Email", key=f"send_email_hist_{i}")
-                            if st.button("Αποστολή", key=f"send_btn_hist_{i}"):
-                                if hist_recipient:
-                                    success, msg = send_email_with_attachment(hist_recipient, f"Προσφορά: {offer.get('protocol_number')}", "Συνημμένα θα βρείτε την προσφορά μας.", pdf_bytes_hist, f"Offer_{offer.get('protocol_number')}.pdf")
-                                    if success: st.success(msg)
-                                    else: st.error(msg)
+        if st.session_state.user_role == 'admin':
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                user_list = ["Όλοι οι Χρήστες"] + get_all_usernames()
+                selected_user = st.selectbox(
+                    "Φιλτράρισμα Ιστορικού ανά Χρήστη:", 
+                    user_list,
+                )
+                if selected_user != "Όλοι οι Χρήστες":
+                    user_to_filter = selected_user
+            with col2:
+                st.write("")
+                st.write("")
+                if st.button("Ανανέωση Λίστας", use_container_width=True):
+                    st.session_state.offers_history = []
+                    st.rerun()
+        else: # Standard user
+            user_to_filter = st.session_state.username
 
+        st.divider()
+
+        # --- Apply Filter ---
+        if user_to_filter:
+            offers_to_display = [
+                offer for offer in all_offers 
+                if offer.get('created_by_user', '').strip().lower() == user_to_filter.strip().lower()
+            ]
+        else: # Admin has selected "All Users"
+            offers_to_display = all_offers
+        
+        # --- Display Results ---
+        if not offers_to_display:
+            st.warning("Δεν βρέθηκαν προσφορές για την τρέχουσα επιλογή.")
+        else:
+            st.subheader(f"Εμφάνιση {len(offers_to_display)} προσφορών")
+            for i, offer in enumerate(offers_to_display):
+                expander_title = (
+                    f"**{offer.get('protocol_number')}** - {offer.get('client_company')} ({offer.get('issue_date')}) | "
+                    f"Από: **{offer.get('created_by_user', 'N/A')}**"
+                )
+                with st.expander(expander_title):
+                    display_offer_details(offer)
+                    st.divider()
+                    pdf_bytes_hist = generate_pdf_data(offer)
+                    if pdf_bytes_hist:
+                        base64_pdf_hist = base64.b64encode(pdf_bytes_hist).decode('utf-8')
+                        pdf_data_uri_hist = f"data:application/pdf;base64,{base64_pdf_hist}"
+                        c1, c2, c3 = st.columns([2, 2, 3])
+                        c1.link_button("👁️ Προεπισκόπηση", url=pdf_data_uri_hist, use_container_width=True)
+                        c2.download_button(label="📥 Λήψη", data=pdf_bytes_hist, file_name=f"Offer_{offer.get('protocol_number')}.pdf", mime="application/pdf", key=f"down_hist_{i}", use_container_width=True)
+                        with c3:
+                            with st.expander("📧 Αποστολή"):
+                                hist_recipient = st.text_input("Email", key=f"send_email_hist_{i}")
+                                if st.button("Αποστολή", key=f"send_btn_hist_{i}"):
+                                    if hist_recipient:
+                                        success, msg = send_email_with_attachment(hist_recipient, f"Προσφορά: {offer.get('protocol_number')}", "Συνημμένα θα βρείτε την προσφορά μας.", pdf_bytes_hist, f"Offer_{offer.get('protocol_number')}.pdf")
+                                        if success: st.success(msg)
+                                        else: st.error(msg)
+    
     with tab_analytics:
         display_analytics_tab(st.session_state.username, st.session_state.user_role)
         
     with tab_ai:
         st.header("🤖 AI Assistant")
+        # ... (AI tab logic remains the same) ...
         st.info("Συνομιλήστε ελεύθερα με τον βοηθό AI για οποιαδήποτε ερώτηση.")
         if 'ai_messages' not in st.session_state: st.session_state.ai_messages = []
         for message in st.session_state.ai_messages:
@@ -688,12 +766,15 @@ def main():
                     error_message = f"Παρουσιάστηκε σφάλμα: {e}"; st.error(error_message)
                     st.session_state.ai_messages.append({"role": "assistant", "content": error_message})
 
+
     with tab_settings:
         display_settings_tab()
 
-# --- 5. SCRIPT EXECUTION ---
+# --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
     init_db()
-    try: genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    except Exception: st.warning("Δεν ήταν δυνατή η αρχικοποίηση του Gemini AI.", icon="⚠️")
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    except Exception:
+        st.warning("Δεν ήταν δυνατή η αρχικοποίηση του Gemini AI.", icon="⚠️")
     main()
