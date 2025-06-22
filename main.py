@@ -674,47 +674,58 @@ def main():
     with tab_history:
         st.header("📂 Ιστορικό Προσφορών")
 
-        # Load offers if not already in session state
+        # Βήμα 1: Φόρτωση όλων των προσφορών αν δεν υπάρχουν ήδη στο session
         if not st.session_state.get('offers_history'):
             with st.spinner("Φόρτωση ιστορικού..."):
                 st.session_state.offers_history = load_offers_from_db()
-        
         all_offers = st.session_state.get('offers_history', [])
         
-        # --- UI and Filtering Logic ---
+        # Αρχικοποίηση της λίστας που θα εμφανιστεί
+        offers_to_display = []
+
+        # Βήμα 2: UI και καθορισμός του φίλτρου ανάλογα με τον ρόλο του χρήστη
         user_to_filter = None
 
         if st.session_state.user_role == 'admin':
+            # UI για τον Admin
             col1, col2 = st.columns([3, 1])
             with col1:
                 user_list = ["Όλοι οι Χρήστες"] + get_all_usernames()
                 selected_user = st.selectbox(
-                    "Φιλτράρισμα Ιστορικού ανά Χρήστη:", 
+                    "Φιλτράρισμα Ιστορικού ανά Χρήστη:",
                     user_list,
                 )
+                # Ορίζουμε το φίλτρο μόνο αν δεν έχει επιλεχθεί "Όλοι οι Χρήστες"
                 if selected_user != "Όλοι οι Χρήστες":
                     user_to_filter = selected_user
             with col2:
                 st.write("")
                 st.write("")
-                if st.button("Ανανέωση Λίστας", use_container_width=True):
+                if st.button("Ανανέωση Λίστας", use_container_width=True, key="admin_refresh"):
                     st.session_state.offers_history = []
                     st.rerun()
-        else: # Standard user
+        else: # UI για απλό χρήστη
+            # Ορίζουμε το φίλτρο να είναι πάντα ο ίδιος ο χρήστης
             user_to_filter = st.session_state.username
+            # Επαναφέρουμε το κουμπί ανανέωσης και για τον απλό χρήστη
+            if st.button("Ανανέωση Λίστας", key="user_refresh"):
+                st.session_state.offers_history = []
+                st.rerun()
 
         st.divider()
 
-        # --- Apply Filter ---
+        # Βήμα 3: Εφαρμογή του φίλτρου στη λίστα
         if user_to_filter:
+            # Αν έχει οριστεί φίλτρο (είτε από τον admin είτε για τον απλό χρήστη)
             offers_to_display = [
-                offer for offer in all_offers 
+                offer for offer in all_offers
                 if offer.get('created_by_user', '').strip().lower() == user_to_filter.strip().lower()
             ]
-        else: # Admin has selected "All Users"
+        else:
+            # Αν δεν έχει οριστεί φίλτρο (δηλ. ο admin επέλεξε "Όλοι οι Χρήστες")
             offers_to_display = all_offers
         
-        # --- Display Results ---
+        # Βήμα 4: Εμφάνιση των αποτελεσμάτων
         if not offers_to_display:
             st.warning("Δεν βρέθηκαν προσφορές για την τρέχουσα επιλογή.")
         else:
